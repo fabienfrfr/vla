@@ -27,57 +27,61 @@ def vla_sequential_forward(x, weight_q, weight_k, weight_v, weight_u,
                            lambda0=0.1, epsilon=1e-4, period=20, eta=1e-3):
     """
     Sequential forward pass of Variational Linear Attention (VLA) v3.
-    x: [T, D] - Input sequence
+    x: [B, T, D] - Input sequence
     weight_q, weight_k, weight_v, weight_u: Projection weight matrices
     """
-    seq_len, dim = x.shape
-    hidden_dim = weight_q.shape[0]  # Hidden dimension (dh)
+    B, T, D = x.shape
+    dh = weight_q.shape[0]
+    device = x.device
     
-    # Memory state S and penalty matrix A
-    memory_s = torch.zeros(hidden_dim, hidden_dim, device=x.device)
-    penalty_a = (1.0 / lambda0) * torch.eye(hidden_dim, device=x.device)
-    key_accumulator = torch.zeros(hidden_dim, device=x.device)
+    # Memory state S [B, dh, dh] and penalty matrix A [B, dh, dh]
+    memory_s = torch.zeros(B, dh, dh, device=device)
+    penalty_a = (1.0 / lambda0) * torch.eye(dh, device=device).unsqueeze(0).repeat(B, 1, 1)
+    key_accumulator = torch.zeros(B, dh, device=device)
     
     outputs = []
     
-    for t in range(seq_len):
-        xt = x[t]
+    for t in range(T):
+        xt = x[:, t, :] # [B, D]
         
         # --- Feature Mapping ---
-        k_raw = weight_k @ xt
+        k_raw = xt @ weight_k.T # [B, dh]
         k_feat = F.elu(k_raw) + 1.0
-        k_hat = k_feat / (k_feat.norm() + 1e-6)
+        k_hat = k_feat / (k_feat.norm(dim=1, keepdim=True) + 1e-6) # [B, dh]
         
         # Penalty direction (Wu * k_raw)
-        u = F.normalize(weight_u @ k_raw, p=2, dim=0) / (hidden_dim**0.5)
+        u = F.normalize(k_raw @ weight_u.T, p=2, dim=1) / (dh**0.5) # [B, dh]
         
         # --- Sherman-Morrison update for A ---
         # A acts as the inverse covariance matrix, tracking the 
         # 'uncertainty' of the latent memory directions (Kalman Gain logic).
-        z_sm = penalty_a @ u
-        delta = torch.clamp(1.0 + u.T @ z_sm, min=epsilon)
-        penalty_a = penalty_a - (z_sm.ger(z_sm) / delta)
+        z_sm = torch.einsum('bij, bj -> bi', penalty_a, u) # [B, dh]
+        delta = torch.clamp(1.0 + torch.einsum('bi, bi -> b', u, z_sm), min=epsilon) # [B]
+        penalty_a = penalty_a - torch.einsum('bi, bj -> bij', z_sm, z_sm) / delta.view(-1, 1, 1)
         
         # Periodic refresh to prevent eigenvalue drift
         if (t + 1) % period == 0:
-            penalty_a = penalty_a + eta * torch.eye(hidden_dim, device=x.device)
+            penalty_a = penalty_a + eta * torch.eye(dh, device=device).unsqueeze(0)
             
         # --- Residual Memory S update ---
-        alpha = penalty_a @ k_hat
-        alpha_hat = alpha / (alpha.norm() + 1e-6)
+        alpha = torch.einsum('bij, bj -> bi', penalty_a, k_hat) # [B, dh]
+        alpha_hat = alpha / (alpha.norm(dim=1, keepdim=True) + 1e-6)
         
-        residual = (weight_v @ xt) - (memory_s @ k_hat)
-        memory_s = memory_s + residual.ger(alpha_hat)
+        residual = (xt @ weight_v.T) - torch.einsum('bij, bj -> bi', memory_s, k_hat)
+        memory_s = memory_s + torch.einsum('bi, bj -> bij', residual, alpha_hat)
         
         # --- Output Calculation ---
-        query = F.elu(weight_q @ xt) + 1.0
+        query = F.elu(xt @ weight_q.T) + 1.0 # [B, dh]
         key_accumulator = key_accumulator + k_feat
         
-        output = (memory_s @ query) / torch.clamp(key_accumulator.T @ query, min=epsilon)
+        output = (
+            torch.einsum('bij, bj -> bi', memory_s, query) / 
+            torch.clamp(torch.einsum('bi, bi -> b', key_accumulator, query), min=epsilon).unsqueeze(1)
+        )
         outputs.append(output)
         
-    return torch.stack(outputs)
-
+    return torch.stack(outputs, dim=1) # [B, T, dh]
+    
 
 def vla_semi_parallel_s_update(hat_k, hat_alpha, value_raw):
     """
