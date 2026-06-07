@@ -1,3 +1,25 @@
+"""
+Variational Linear Attention (VLA)
+==================================
+Author: Fabien Furfaro
+
+This module implements VLA, a memory-efficient attention mechanism that treats
+latent state updates as a Recursive Least Squares (RLS) problem rather than 
+simple stochastic gradient descent.
+
+Comparison with DeltaNet:
+-------------------------
+1. Delta Rule (Widrow-Hoff / DeltaNet):
+   Formula: ΔS = η * (y - S*k_hat) * k_hat^T
+   - Uses a fixed learning rate 'η'. 
+   - Simple but rigid; prone to information crosstalk.
+
+2. VLA (Recursive Least Squares / Adaptive):
+   Formula: ΔS = residual * (A * k_hat)^T
+   - Uses an adaptive matrix learning rate 'A' (inverse covariance).
+   - Dynamically orthogonalizes memory; optimizes for stable retention.
+"""
+
 import torch
 import torch.nn.functional as F
 
@@ -30,6 +52,8 @@ def vla_sequential_forward(x, weight_q, weight_k, weight_v, weight_u,
         u = F.normalize(weight_u @ k_raw, p=2, dim=0) / (hidden_dim**0.5)
         
         # --- Sherman-Morrison update for A ---
+        # A acts as the inverse covariance matrix, tracking the 
+        # 'uncertainty' of the latent memory directions (Kalman Gain logic).
         z_sm = penalty_a @ u
         delta = torch.clamp(1.0 + u.T @ z_sm, min=epsilon)
         penalty_a = penalty_a - (z_sm.ger(z_sm) / delta)
