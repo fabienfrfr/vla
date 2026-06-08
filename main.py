@@ -25,7 +25,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 def vla_sequential_forward(x, weight_q, weight_k, weight_v, weight_u, 
-                           lambda0=0.1, epsilon=1e-4, period=20, eta=1e-3, cl=False):
+                           lambda0=0.1, epsilon=1e-4, period=20, eta=1e-3, cr=False):
     """
     Sequential forward pass of Variational Linear Attention (VLA) v3.
     x: [B, T, D] - Input sequence
@@ -40,7 +40,7 @@ def vla_sequential_forward(x, weight_q, weight_k, weight_v, weight_u,
     penalty_a = (1.0 / lambda0) * torch.eye(dh, device=device).unsqueeze(0).repeat(B, 1, 1)
     key_accumulator = torch.zeros(B, dh, device=device)
     
-    outputs, keys_list = [], []
+    outputs, keys_list, memory_history = [], [], []
     
     for t in range(T):
         xt = x[:, t, :] # [B, D]
@@ -49,7 +49,7 @@ def vla_sequential_forward(x, weight_q, weight_k, weight_v, weight_u,
         k_raw = xt @ weight_k.T # [B, dh]
         k_feat = F.elu(k_raw) + 1.0
         k_hat = k_feat / (k_feat.norm(dim=1, keepdim=True) + 1e-6) # [B, dh]
-        if cl is True : 
+        if cr is True : 
             keys_list.append(k_hat)
 
         # Penalty direction (Wu * k_raw)
@@ -72,7 +72,9 @@ def vla_sequential_forward(x, weight_q, weight_k, weight_v, weight_u,
         
         residual = (xt @ weight_v.T) - torch.einsum('bij, bj -> bi', memory_s, k_hat)
         memory_s = memory_s + torch.einsum('bi, bj -> bij', residual, alpha_hat)
-        
+        # get all memory
+        memory_history.append(memory_s.clone())
+
         # --- Output Calculation ---
         query = F.elu(xt @ weight_q.T) + 1.0 # [B, dh]
         key_accumulator = key_accumulator + k_feat
@@ -83,10 +85,10 @@ def vla_sequential_forward(x, weight_q, weight_k, weight_v, weight_u,
         )
         outputs.append(output)
     
-    if cl : 
-        return torch.stack(outputs, dim=1), torch.stack(keys_list, dim=1)
+    if cr : 
+        return torch.stack(outputs, dim=1), torch.stack(keys_list, dim=1), torch.stack(memory_history, dim=1)
     else : 
-        return torch.stack(outputs, dim=1) # [B, T, dh]
+        return torch.stack(outputs, dim=1), None, torch.stack(memory_history, dim=1) 
     
 
 def vla_semi_parallel_s_update(hat_k, hat_alpha, value_raw):
@@ -130,20 +132,20 @@ We incorporate a Contrastive Loss on the projected keys (k_hat).
 '''
 
 class CausalVLA(nn.Module):
-    def __init__(self, d_model, d_hidden, cl=True):
+    def __init__(self, d_model, d_hidden, cr=True):
         super().__init__()
         self.w_q = nn.Linear(d_model, d_hidden, bias=False)
         self.w_k = nn.Linear(d_model, d_hidden, bias=False)
         self.w_v = nn.Linear(d_model, d_hidden, bias=False)
-        self.w_u = nn.Linear(d_model, d_hidden, bias=False)
+        self.w_u = nn.Linear(d_hidden, d_hidden, bias=False)
         self.out_proj = nn.Linear(d_hidden, d_model)
-        self.constractive_loss = cl
+        self.constractive_loss = cr
 
     def forward(self, x, targets=None):
         # 1. Call the pure engine
-        out, keys = vla_sequential_forward(
+        out, keys, _ = vla_sequential_forward(
             x, self.w_q.weight, self.w_k.weight, self.w_v.weight, self.w_u.weight,
-            cl=self.constractive_loss
+            cr=self.constractive_loss
         )
         logits = self.out_proj(out)
         
@@ -152,7 +154,7 @@ class CausalVLA(nn.Module):
         if targets is not None:
             ce_loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
             
-            # Only compute contrastive constraint loss if cl=True
+            # Only compute contrastive constraint loss if cr=True
             if self.constractive_loss:
                 k_hat_flat = keys.view(-1, keys.size(-1))
                 # Structural Loss: Forces latent keys (k_hat) to form distinct clusters

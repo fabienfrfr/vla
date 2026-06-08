@@ -5,6 +5,9 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "marimo>=0.23.9",
+    "matplotlib>=3.10.9",
     "pytest>=9.0.3",
+    "scikit-learn>=1.9.0",
     "torch>=2.12.0",
 ]

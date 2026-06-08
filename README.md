@@ -1,15 +1,24 @@
-# VLA: Variational Linear Attention
+# VLA-CR: Variational Linear Attention with Contrastive Latent Structure
 
-Unofficial PyTorch implementation of **Variational Linear Attention (VLA)**, based on *[Variational Linear Attention: Stable Associative Memory for Long-Context Transformers (Pandey & Singh, 2026)](https://arxiv.org/html/2605.11196v1)*.
+Unofficial PyTorch implementation of **Variational Linear Attention (VLA)**, based on *[Pandey & Singh, 2026](https://arxiv.org/html/2605.11196v1)*, with **Contrastive Regularization (CR)**.
 
 ### Overview
 
-This repository provides:
+This repository extends the original VLA architecture by investigating how to structure the latent memory space for better interpretability.
 
-* **`vla_sequential_forward`**: Reference sequential implementation (Algorithm 1) featuring adaptive Sherman-Morrison updates for stable memory retention.
-* **`vla_semi_parallel_s_update`**: Associative scan-based structure for investigating latent memory dynamics.
+* **Core VLA Implementation**: Accurate reproduction of `vla_sequential_forward` (Algorithm 1) with adaptive Sherman-Morrison updates.
+* **Contrastive Regularization (CR)**: A modified forward pass (`cr=True`) that forces the model to organize its associative memory ($S_t$) based on temporal context.
+
+### Latent Space Explainability
+By enforcing **Contrastive Regularization**, we force the model to segregate temporal contexts into distinct manifolds. This renders the latent memory *intrinsically explainable*, as we can map memory trajectories directly to sequence classes.
+
+![Temporal Latent Clusters](cluster.png)
+
+*Figure: t-SNE visualization of the latent memory manifolds ($S_t$) showing clear segregation by context.*
 
 ### Citation
+
+If you use this work, please cite both the original paper and this implementation:
 
 ```bibtex
 @article{pandey2026variational,
@@ -19,6 +28,15 @@ This repository provides:
   year={2026}
 }
 
+@misc{furfaro2026vlacr,
+  title={VLA with Contrastive Latent Structure},
+  author={Furfaro},
+  url={[https://github.com/fabienfrfr/vla](https://github.com/fabienfrfr/vla)},
+  year={2026}
+}
 ```
 
-*Disclaimer: This is an educational and experimental implementation not affiliated with the original authors.*
+*Disclaimer: This is an experimental implementation investigating latent structure through contrastive learning.*
+
+
+
