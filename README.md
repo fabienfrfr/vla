@@ -14,7 +14,7 @@ By enforcing **Contrastive Regularization**, we force the model to segregate tem
 
 ![Temporal Latent Clusters](cluster.png)
 
-*Figure: t-SNE visualization of the latent memory manifolds ($S_t$) showing clear segregation by context.*
+*Figure: t-SNE visualization of the latent memory manifolds (*$S_t$*) showing segregation by context.*
 
 ### Citation
 
