@@ -21,10 +21,11 @@ Comparison with DeltaNet:
 """
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
 def vla_sequential_forward(x, weight_q, weight_k, weight_v, weight_u, 
-                           lambda0=0.1, epsilon=1e-4, period=20, eta=1e-3):
+                           lambda0=0.1, epsilon=1e-4, period=20, eta=1e-3, cl=False):
     """
     Sequential forward pass of Variational Linear Attention (VLA) v3.
     x: [B, T, D] - Input sequence
@@ -39,7 +40,7 @@ def vla_sequential_forward(x, weight_q, weight_k, weight_v, weight_u,
     penalty_a = (1.0 / lambda0) * torch.eye(dh, device=device).unsqueeze(0).repeat(B, 1, 1)
     key_accumulator = torch.zeros(B, dh, device=device)
     
-    outputs = []
+    outputs, keys_list = [], []
     
     for t in range(T):
         xt = x[:, t, :] # [B, D]
@@ -48,7 +49,9 @@ def vla_sequential_forward(x, weight_q, weight_k, weight_v, weight_u,
         k_raw = xt @ weight_k.T # [B, dh]
         k_feat = F.elu(k_raw) + 1.0
         k_hat = k_feat / (k_feat.norm(dim=1, keepdim=True) + 1e-6) # [B, dh]
-        
+        if cl is True : 
+            keys_list.append(k_hat)
+
         # Penalty direction (Wu * k_raw)
         u = F.normalize(k_raw @ weight_u.T, p=2, dim=1) / (dh**0.5) # [B, dh]
         
@@ -79,13 +82,16 @@ def vla_sequential_forward(x, weight_q, weight_k, weight_v, weight_u,
             torch.clamp(torch.einsum('bi, bi -> b', key_accumulator, query), min=epsilon).unsqueeze(1)
         )
         outputs.append(output)
-        
-    return torch.stack(outputs, dim=1) # [B, T, dh]
+    
+    if cl : 
+        return torch.stack(outputs, dim=1), torch.stack(keys_list, dim=1)
+    else : 
+        return torch.stack(outputs, dim=1) # [B, T, dh]
     
 
 def vla_semi_parallel_s_update(hat_k, hat_alpha, value_raw):
     """
-    Computes the associative scan for the Memory state S.
+    Computes the associative scan for the Memory state S. (TODO)
     hat_k: [T, dh]
     hat_alpha: [T, dh]
     value_raw: [T, dh]
@@ -110,3 +116,49 @@ def vla_semi_parallel_s_update(hat_k, hat_alpha, value_raw):
         s_states[t] = curr_g
         
     return s_states
+
+# --- CAUSAL VLA WRAPPER (The Training/Architecture Module) ---
+'''
+Contrastive Loss Integration: (EXPLORATORY)
+-----------------------------
+We incorporate a Contrastive Loss on the projected keys (k_hat). 
+- Why: Standard VLA optimizes only for reconstruction; latent keys can be 
+  geometrically disorganized. 
+- Goal: By enforcing similarity between keys of the same context, we force the 
+  latent space to organize into distinct clusters, ensuring stable, 
+  interpretable memory representations (visible via t-SNE for example).
+'''
+
+class CausalVLA(nn.Module):
+    def __init__(self, d_model, d_hidden, cl=True):
+        super().__init__()
+        self.w_q = nn.Linear(d_model, d_hidden, bias=False)
+        self.w_k = nn.Linear(d_model, d_hidden, bias=False)
+        self.w_v = nn.Linear(d_model, d_hidden, bias=False)
+        self.w_u = nn.Linear(d_model, d_hidden, bias=False)
+        self.out_proj = nn.Linear(d_hidden, d_model)
+        self.constractive_loss = cl
+
+    def forward(self, x, targets=None):
+        # 1. Call the pure engine
+        out, keys = vla_sequential_forward(
+            x, self.w_q.weight, self.w_k.weight, self.w_v.weight, self.w_u.weight,
+            cl=self.constractive_loss
+        )
+        logits = self.out_proj(out)
+        
+        # 2. Manage losses externally (if targets exist)
+        loss = None
+        if targets is not None:
+            ce_loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+            
+            # Only compute contrastive constraint loss if cl=True
+            if self.constractive_loss:
+                k_hat_flat = keys.view(-1, keys.size(-1))
+                # Structural Loss: Forces latent keys (k_hat) to form distinct clusters
+                sim = torch.matmul(k_hat_flat, k_hat_flat.T) / 0.1
+                loss = ce_loss + 0.1 * F.cross_entropy(sim, torch.arange(sim.size(0), device=x.device))
+            else:
+                loss = ce_loss
+
+        return logits, loss
