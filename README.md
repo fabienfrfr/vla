@@ -31,7 +31,7 @@ If you use this work, please cite both the original paper and this implementatio
 @misc{furfaro2026vlacr,
   title={VLA with Contrastive Latent Structure},
   author={Furfaro},
-  url={[https://github.com/fabienfrfr/vla](https://github.com/fabienfrfr/vla)},
+  url={https://github.com/fabienfrfr/vla},
   year={2026}
 }
 ```
